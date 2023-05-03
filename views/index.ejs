@@ -1,0 +1,416 @@
+<!-- //header -->
+<%- include('./header', {}) %>
+<!--
+<script src="//cdn.jsdelivr.net/pouchdb/5.4.5/pouchdb.min.js"></script>
+-->
+<script src="//cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
+<script src="//cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.find.min.js"></script>
+<script src="/pouchdb.quick-search.min.js"></script>
+<link rel="stylesheet" href="//cdn.datatables.net/1.13.2/css/jquery.dataTables.min.css"/> 
+<script src="//cdn.datatables.net/1.13.2/js/jquery.dataTables.min.js"></script>
+<!-- header// -->
+
+<script>
+var local_db = new PouchDB( 'mydb' );
+function createUuid(){
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(a) {
+    var r = (new Date().getTime() + Math.random() * 16)%16 | 0, v = a == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function showAllDocs(){
+  $('#items-table').DataTable().clear();
+  $('#items-table').DataTable().destroy();
+  $('#items-tbody').html( '' );
+  local_db.allDocs( { include_docs: true } ).then( function( docs ){
+    //. 同期後の全データ
+    for( var i = 0; i < docs.rows.length; i ++ ){
+      var doc = docs.rows[i].doc;
+      var tr = '<tr>'
+        + '<td id="item-' + doc._id + '-name">' + doc.name + '</td>'
+        + '<td id="item-' + doc._id + '-price">' + doc.price + '</td>'
+        + '<td>'
+        + '<button class="btn btn-xs btn-warning" onClick="editItem(\'' + doc._id + '\')">編集</button>'
+        + '<button class="btn btn-xs btn-danger" onClick="deleteItem(\'' + doc._id + '\')">削除</button>'
+        + '<button class="btn btn-xs btn-info" onClick="historyItem(\'' + doc._id + '\')">変更履歴</button>'
+        + '</td>'
+        + '</tr>';
+      $('#items-tbody').append( tr );
+    }
+    $('#items-table').DataTable({
+      columnDefs: [ 
+        { targets: 0, width: '40%' },
+        { targets: 1, width: '30%' },
+        { targets: 2, width: '30%', orderable: false }
+      ],
+      //searching: false,
+      //paging: false,
+      //info: false,
+      order: [ [ 0, 'desc' ] ]
+    });
+  });
+}
+
+<% if( database_url ){ %>
+var remote_db_url = '';
+var remote_db = null;
+var encoded = '<%= database_url %>';
+$.ajax({
+  url: '/decode',
+  type: 'POST',
+  data: { code: encoded },
+  success: function( r ){
+    if( r && r.status && r.code ){
+      remote_db_url = r.code;
+      try_to_connect( 1 );
+    }
+  },
+  error: function( e0, e1, e2 ){
+    console.log( e0, e1, e2 );
+  }
+});
+
+function try_to_connect( ms ){
+  if( remote_db_url ){
+    setTimeout( function(){
+      remote_db = new PouchDB( remote_db_url );
+      local_db
+        .sync( remote_db, { live: true, retry: true } )
+        .on( 'change', function( change ){
+          //console.log( 'change', change );
+          if( change.direction == 'pull' ){
+            showAllDocs();
+          }else if( change.direction == 'push' ){
+          }
+        }).on( 'complete', function(){
+          console.log( 'complete' );
+        }).on( 'error', function( err ){
+          console.log( 'error', err );
+        });
+    }, ms );
+  }
+}
+<% } %>
+
+$(function(){
+  showAllDocs();
+
+  $.extend( $.fn.dataTable.defaults, {
+    language: {
+      url: '//cdn.datatables.net/plug-ins/9dcbecd42ad/i18n/Japanese.json'
+    }
+  });
+});
+
+function historyItem( item_id ){
+  if( item_id ){
+    local_db.get( item_id, { revs_info: true } ).then( function( result ){
+      //. { revs: true } -> result._revisions.ids
+      //. { revs_info: true } -> result._id, result._revs_info
+      //console.log( {result} );
+      showHistoryModal( result._id, result._revs_info, result.name, result.price );
+    });
+  }
+}
+
+function showHistoryModal( item_id, item_revs, item_name, item_price ){
+  var accordion = '<div class="accordion" id="historyAccordion">';
+  var count = 0;
+  var cards = [];
+  for( var i = 0; i < item_revs.length; i ++ ){
+    if( item_revs[i].status != 'missing' ){  //. 'available'
+      local_db.get( item_id, { rev: item_revs[i].rev } ).then( function( item ){
+        //console.log( {item} );
+        var id = item._id + '-' + item._rev;
+        var card = '<div class="card">'
+          + '<div class="card-header" id="card-' + id + '">'
+          + '<h5 class="mb-0">'
+          + '<button class="btn btn-link" type="button" data-toggle="collapse" data-target="#target-' + id + '" aria-expanded="true" aria-controls="target-' + id + '">'
+          + item._rev
+          + '</button>'
+          + '</h5>'
+          + '</div>'
+          + '<div class="collapse" id="target-' + id + '" aria-labelledby="card-' + id + '" data-parent="#historyAccordion">' 
+          + '<div class="card-body"><pre style="text-align:left;">'
+          + JSON.stringify( item, null, 2 )
+          + '</pre></div>'
+          + '</div>'
+          + '</div>';
+        cards.push( { id: item._rev, card: card } );
+        count ++;
+        if( count == item_revs.length ){
+          cards.sort( compareByIdRev );
+          for( var j = 0; j < cards.length; j ++ ){
+            accordion += cards[j].card;
+          }
+          accordion += '</div>';
+
+          $('#historyModalLabel').html( item_name + ' - '+ item_price );
+          $('#historymodal-body').html( accordion );
+          $('#historyModal').modal();
+        }
+      }).catch( function( err ){
+        console.log( {err} );
+      });
+    }else{
+      count ++;
+      if( count == item_revs.length ){
+        cards.sort( compareByIdRev );
+        for( var j = 0; j < cards.length; j ++ ){
+          accordion += cards[j].card;
+        }
+        accordion += '</div>';
+
+        $('#historyModalLabel').html( item_name + ' - '+ item_price );
+        $('#historymodal-body').html( accordion );
+        $('#historyModal').modal();
+      }
+    }
+  }
+}
+
+function createItem(){
+  $('#item-input-id').val( '' );
+  $('#item-input-name').val( '' );
+  $('#item-input-price').val( '' );
+  $('#itemModal').modal();
+}
+
+function editItem( item_id ){
+  if( item_id ){
+    var name = $('#item-'+item_id+'-name').html();
+    var price = $('#item-'+item_id+'-price').html();
+
+    $('#item-input-id').val( item_id );
+    $('#item-input-name').val( name );
+    $('#item-input-price').val( price );
+    $('#itemModal').modal();
+  }
+}
+
+function deleteItem( item_id ){
+  if( item_id ){
+    var name = $('#item-'+item_id+'-name').html();
+    var price = $('#item-'+item_id+'-price').html();
+    if( confirm( name + '（' + price + '円）を削除していいですか？' ) ){
+      local_db.get( item_id ).then( function( item ){
+        return local_db.remove( item );
+      }).then( function( response ){
+        console.log( {response} );
+        $('#itemModal').modal('hide');
+        showAllDocs();
+      });
+    }
+  }
+}
+
+function saveItem(){
+  var item_id = $('#item-input-id').val();
+  var name = $('#item-input-name').val();
+  var price = $('#item-input-price').val();
+  if( name && price ){
+    price = parseInt( price );
+    if( item_id ){
+      local_db.get( item_id ).then( function( item ){
+        item.name = name;
+        item.price = price;
+        return local_db.put( item );
+      }).then( function( response ){
+        console.log( {response} );
+        $('#itemModal').modal('hide');
+        showAllDocs();
+      });
+    }else{
+      var _id = createUuid();
+      local_db.put( { _id: _id, name: name, price: price } ).then( function( response ){
+        console.log( {response} );
+        $('#itemModal').modal('hide');
+        showAllDocs();
+      }).then( function( err ){
+        console.log( {err} );
+      });
+    }
+  }
+}
+
+function compareByIdRev( a, b ){
+  var r = 0;
+
+  if( a['id'] < b['id'] ){ r = 1; }
+  else if( a['id'] > b['id'] ){ r = -1; }
+
+  return r;
+}
+
+function compareByScoreRev( a, b ){
+  var r = 0;
+
+  if( a['score'] < b['score'] ){ r = 1; }
+  else if( a['score'] > b['score'] ){ r = -1; }
+
+  return r;
+}
+
+function fullTextSearch(){
+  $('#searchModal').modal();
+}
+
+function searchDocs(){
+  var key = $('#search_key').val();
+  if( key ){
+    searchItems( key );
+  }
+}
+
+//. key は日本語非対応
+function searchItems( key ){
+  $('#fulltextsearch-results').html( '' );
+
+  //. https://github.com/pouchdb-community/pouchdb-quick-search
+  local_db.search({
+    query: key,
+    fields: [ 'name', 'price' ],  //. name と price を検索する
+    include_docs: true,
+    highting: true
+  }).then( function( result ){
+    //console.log( { result } );
+    //. result.rows に結果配列？
+    var rows = [];
+    for( var i = 0; i < result.rows.length; i ++ ){
+      rows.push( result.rows[i] );
+      //console.log( result.rows[i].doc );
+    }
+    rows.sort( compareByScoreRev );
+
+    var table = '<table class="table table-bordered" style="width:100%;">'
+      + '<tr><th>name</th><th>price</th><th>score</th></tr>';
+    for( var i = 0; i < rows.length; i ++ ){
+      var tr = '<tr>'
+        + '<td>' + rows[i].doc.name + '</td>'
+        + '<td>' + rows[i].doc.price + '</td>'
+        + '<td>' + rows[i].score + '</td>'
+        + '</tr>';
+      table += tr;
+    }
+    table += '</table>';
+    $('#fulltextsearch-results').html( table );
+  }).catch( function( err ){
+    console.log( {err} );
+  });
+}
+
+function resetDb(){
+  if( confirm( 'データベースをリセットしてよろしいですか？' ) ){
+    local_db.destroy().then( function( response ){
+      console.log( {response} );
+      showAllDocs();
+    }).catch( function( err ){
+      console.log( {err} );
+    });
+  }
+}
+</script>
+
+</head>
+<body>
+
+<!-- //navi -->
+<%- include('./navi', {}) %>
+<!-- navi// -->
+
+<!-- //main -->
+<div class="container" style="text-align: right;">
+  <button class="btn btn-xs btn-success" onClick="createItem()">新規作成</button>
+  <button class="btn btn-xs btn-info" onClick="fullTextSearch()">全文検索（β）</button>
+  <button class="btn btn-xs btn-danger" onClick="resetDb()">全リセット</button>
+</div>
+
+<div class="container">
+  <table class="table table-bordered" id="items-table">
+    <thead>
+      <tr>
+        <th>名称</th>
+        <th>価格</th>
+        <th>アクション</th>
+      </tr>
+    </thead>
+    <tbody id="items-tbody">
+    </tbody>
+  </table>
+</div>
+
+<div class="modal bd-example-modal-lg fade" id="itemModal" tabindex="-1" role="dialog" aria-labbelledby="itemModal" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h4 class="modal-title" id="itemModalLabel">商品編集</h4>
+      </div>
+      <div class="modal-body" id="itemmodal-body">
+        <table class="table table-bordered">
+          <tr>
+            <td>名称</td>
+            <td id="item-edit-name"><input type="text" id="item-input-name" value=""/></td>
+          </tr>
+          <tr>
+            <td>価格</td>
+            <td id="item-edit-price"><input type="text" id="item-input-price" value=""/></td>
+          </tr>
+          <tr>
+            <td colspan="2">
+              <span style="display:none;"><input type="text" id="item-input-id" value=""/></span>
+              <button class="btn btn-xs btn-success" onClick="saveItem()">保存</button>
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal bd-example-modal-lg fade" id="historyModal" tabindex="-1" role="dialog" aria-labbelledby="historyModal" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h4 class="modal-title" id="historyModalLabel">編集履歴</h4>
+      </div>
+      <div class="modal-body" id="historymodal-body">
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal bd-example-modal-lg fade" id="searchModal" tabindex="-1" role="dialog" aria-labbelledby="searchModal" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h4 class="modal-title" id="searchModalLabel">全文検索（β）（日本語非対応）</h4>
+      </div>
+      <div class="modal-body" id="searchmodal-body">
+        <table style="width:100%;">
+          <tr>
+            <td style="width:80%;">
+              <input id="search_key" type="text" class="form-control" value=""/>
+            </td>
+            <td style="width:20%;">
+              <button class="btn btn-primary" onClick="searchDocs();">検索</button>
+            </td>
+          </tr>
+        </table>
+
+        <hr/>
+
+        <div id="fulltextsearch-results">
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- main// -->
+
+<!-- //footer -->
+<%- include('./footer',{}) %>
+<!-- footer// -->
+
+</body>
+</html>
